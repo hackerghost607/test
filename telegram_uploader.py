@@ -42,17 +42,26 @@ class RateLimiter:
 
 rate_limiter = RateLimiter(RATE_LIMIT_DELAY)
 
-# Initialize Telegram client with session
-client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
-
 async def ensure_authorized():
     """Ensure the client is authorized and session is saved"""
-    if not await client.is_user_authorized():
-        print("Session not found or expired. Starting authorization...")
-        await client.start(phone=PHONE_NUMBER)
-        print("Authorization successful! Session has been saved.")
-    else:
-        print("Using existing session.")
+    client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+    
+    try:
+        await client.connect()
+        
+        if not await client.is_user_authorized():
+            print("Session not found or expired. Starting authorization...")
+            await client.start(phone=PHONE_NUMBER)
+            print("Authorization successful! Session has been saved.")
+        else:
+            print("Using existing session.")
+            
+        return client
+    except Exception as e:
+        print(f"Error during authorization: {e}")
+        if client.is_connected():
+            await client.disconnect()
+        raise
 
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
@@ -82,7 +91,7 @@ def download_video(url):
     
     return temp_file.name
 
-async def upload_to_telegram(file_path, anime_id, episode_number):
+async def upload_to_telegram(client, file_path, anime_id, episode_number):
     retries = 0
     while retries < MAX_RETRIES:
         try:
@@ -130,7 +139,7 @@ async def upload_to_telegram(file_path, anime_id, episode_number):
         os.unlink(file_path)
     return None
 
-async def process_episodes():
+async def process_episodes(client):
     # Load existing file IDs
     file_ids = load_existing_file_ids()
     
@@ -165,7 +174,7 @@ async def process_episodes():
                 
                 # Upload to Telegram
                 print(f"Uploading to Telegram...")
-                file_id = await upload_to_telegram(temp_file_path, anime_id, episode_number)
+                file_id = await upload_to_telegram(client, temp_file_path, anime_id, episode_number)
                 
                 if file_id:
                     # Save the file ID
@@ -189,18 +198,20 @@ async def process_episodes():
         conn.close()
 
 async def main():
+    client = None
     try:
         # Ensure we're authorized and session is saved
-        await ensure_authorized()
+        client = await ensure_authorized()
         
         # Process episodes
-        await process_episodes()
+        await process_episodes(client)
         
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
         # Properly disconnect the client
-        await client.disconnect()
+        if client and client.is_connected():
+            await client.disconnect()
 
 if __name__ == "__main__":
     # Run the main function
