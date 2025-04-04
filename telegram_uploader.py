@@ -2,20 +2,24 @@ import sqlite3
 import json
 import os
 import requests
-from telebot import TeleBot
 import tempfile
 from pathlib import Path
 import time
 from datetime import datetime, timedelta
+from telethon import TelegramClient
+from telethon.tl.types import DocumentAttributeVideo
+import asyncio
 
 # Telegram configuration
-BOT_TOKEN = "8137037699:AAFIZOjJfKW23LbnGb2n4JBIOTMT6brAmAE"
+API_ID = "20765358"
+API_HASH = "5265d01feb3d4aeaea14af77ab527a65"
+PHONE_NUMBER = "+251715560694"
 CHANNEL_ID = "https://t.me/+sOiKtIvNNsA4MzE8"
-bot = TeleBot(BOT_TOKEN)
 
 # Database configuration
 DB_PATH = "downloads.db"
 OUTPUT_JSON = "telegram_file_ids.json"
+SESSION_FILE = "anime_sender_session"
 
 # Rate limiting configuration
 RATE_LIMIT_DELAY = 30  # seconds between uploads
@@ -37,6 +41,18 @@ class RateLimiter:
         self.last_request_time = datetime.now()
 
 rate_limiter = RateLimiter(RATE_LIMIT_DELAY)
+
+# Initialize Telegram client with session
+client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+
+async def ensure_authorized():
+    """Ensure the client is authorized and session is saved"""
+    if not await client.is_user_authorized():
+        print("Session not found or expired. Starting authorization...")
+        await client.start(phone=PHONE_NUMBER)
+        print("Authorization successful! Session has been saved.")
+    else:
+        print("Using existing session.")
 
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
@@ -66,7 +82,7 @@ def download_video(url):
     
     return temp_file.name
 
-def upload_to_telegram(file_path, anime_id, episode_number):
+async def upload_to_telegram(file_path, anime_id, episode_number):
     retries = 0
     while retries < MAX_RETRIES:
         try:
@@ -74,20 +90,25 @@ def upload_to_telegram(file_path, anime_id, episode_number):
             rate_limiter.wait()
             
             # Upload the video to Telegram
-            with open(file_path, 'rb') as video:
-                message = bot.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=video,
-                    caption=f"Anime ID: {anime_id}\nEpisode: {episode_number}"
-                )
+            message = await client.send_file(
+                CHANNEL_ID,
+                file_path,
+                caption=f"Anime ID: {anime_id}\nEpisode: {episode_number}",
+                attributes=[DocumentAttributeVideo(
+                    duration=0,  # Duration will be set automatically
+                    w=0,  # Width will be set automatically
+                    h=0,  # Height will be set automatically
+                    supports_streaming=True
+                )]
+            )
             
             # Get the file_id from the sent message
-            file_id = message.video.file_id
+            file_id = message.media.document.id
             
             # Clean up the temporary file
             os.unlink(file_path)
             
-            return file_id
+            return str(file_id)
             
         except Exception as e:
             error_msg = str(e).lower()
@@ -109,7 +130,7 @@ def upload_to_telegram(file_path, anime_id, episode_number):
         os.unlink(file_path)
     return None
 
-def process_episodes():
+async def process_episodes():
     # Load existing file IDs
     file_ids = load_existing_file_ids()
     
@@ -144,7 +165,7 @@ def process_episodes():
                 
                 # Upload to Telegram
                 print(f"Uploading to Telegram...")
-                file_id = upload_to_telegram(temp_file_path, anime_id, episode_number)
+                file_id = await upload_to_telegram(temp_file_path, anime_id, episode_number)
                 
                 if file_id:
                     # Save the file ID
@@ -167,5 +188,20 @@ def process_episodes():
     finally:
         conn.close()
 
+async def main():
+    try:
+        # Ensure we're authorized and session is saved
+        await ensure_authorized()
+        
+        # Process episodes
+        await process_episodes()
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        # Properly disconnect the client
+        await client.disconnect()
+
 if __name__ == "__main__":
-    process_episodes() 
+    # Run the main function
+    asyncio.run(main()) 
